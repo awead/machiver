@@ -1,0 +1,2 @@
+External-Description: Example of a known, valid bag for testing.
+Bagging-Date: 2024-11-15

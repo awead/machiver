@@ -1,0 +1,2 @@
+External-Description: Example of a valid bag with a duplicate file.
+Bagging-Date: 2024-11-15
