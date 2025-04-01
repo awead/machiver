@@ -1,9 +1,10 @@
-use std::fs::{File, metadata};
+use std::fs::{self, File, metadata};
 use std::path::{Path, PathBuf};
 use exif::{Reader, Tag, In};
 use std::error::Error;
-use chrono::{NaiveDateTime, DateTime, Local};
+use chrono::{NaiveDateTime, DateTime, Local, Datelike};
 use clap::{Parser, Subcommand};
+use uuid::Uuid;
 
 #[derive(Parser)]
 #[command(name = "machiver")]
@@ -30,10 +31,17 @@ enum Commands {
     /// Directories will be created relative to the destination directory following the ISO8601 format.
     /// If no destination is specified, the current directory will be used.
     Copy {
-        /// Source image file
+        /// Source file or directory
         source: PathBuf,
-        /// Destination directory
+        /// Destination directory (defaults to current directory)
+        #[arg(default_value = ".")]
         destination: PathBuf,
+        /// Recursively process directories
+        #[arg(short, long)]
+        recursive: bool,
+        /// Rename files using a randomly generated UUID
+        #[arg(short = 'm', long)]
+        rename: bool,
     },
 }
 
@@ -59,6 +67,69 @@ fn get_date(path: &Path) -> Result<NaiveDateTime, Box<dyn Error>> {
     Ok(datetime.naive_local())
 }
 
+fn process_path(source: &Path, destination: &Path, recursive: bool, rename: bool) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    let mut copied_files = Vec::new();
+
+    if source.is_file() {
+        copied_files.push(copy_file(source, destination, rename)?);
+    } else if source.is_dir() && recursive {
+        for entry in fs::read_dir(source)? {
+            let entry = entry?;
+            let path = entry.path();
+            copied_files.extend(process_path(&path, destination, recursive, rename)?);
+        }
+    } else if source.is_dir() {
+        return Err(format!("'{}' is a directory. Use --recursive to process directories",
+            source.display()).into());
+    }
+
+    Ok(copied_files)
+}
+
+fn generate_uuid_filename(original: &Path) -> PathBuf {
+    let extension = original.extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("");
+
+    let uuid = Uuid::new_v4().to_string().to_lowercase();
+
+    if extension.is_empty() {
+        PathBuf::from(uuid)
+    } else {
+        PathBuf::from(format!("{}.{}", uuid, extension))
+    }
+}
+
+fn copy_file(source: &Path, destination: &Path, rename: bool) -> Result<PathBuf, Box<dyn Error>> {
+    let date = get_date(source)?;
+
+    // Create the date-based directory structure
+    let date_path = PathBuf::from(format!("{}/{:02}/{:02}",
+        date.year(),
+        date.month(),
+        date.day()
+    ));
+
+    // Combine with destination path
+    let target_dir = destination.join(&date_path);
+    fs::create_dir_all(&target_dir)?;
+
+    // Get the target filename
+    let file_name = if rename {
+        generate_uuid_filename(source)
+    } else {
+        PathBuf::from(source.file_name().ok_or("Source file has no name")?)
+    };
+
+    // Create the full destination path
+    let target_path = target_dir.join(file_name);
+
+    // Copy the file
+    fs::copy(source, &target_path)?;
+
+    Ok(target_path)
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -69,16 +140,14 @@ fn main() {
                 Err(e) => println!("{}", e),
             }
         },
-        Commands::Copy { source, destination } => {
-            match get_date(&source) {
-                Ok(datetime) => {
-                    println!("Would copy {} to {} using date {}",
-                        source.display(),
-                        destination.display(),
-                        datetime
-                    );
+        Commands::Copy { source, destination, recursive, rename } => {
+            match process_path(&source, &destination, recursive, rename) {
+                Ok(copied_files) => {
+                    for path in copied_files {
+                        println!("Copied to {}", path.display());
+                    }
                 },
-                Err(e) => println!("{}", e),
+                Err(e) => println!("Error: {}", e),
             }
         },
     }
@@ -88,6 +157,8 @@ fn main() {
 mod tests {
     use super::*;
     use chrono::{NaiveDate, Datelike};
+    use tempfile::TempDir;
+    use std::fs;
 
     #[test]
     fn test_exif_date() {
@@ -106,5 +177,133 @@ mod tests {
         // Since this depends on the file's creation time, we just verify
         // that we get a valid date and don't error
         assert!(result.year() >= 2024);
+    }
+
+    #[test]
+    fn test_copy_file_with_exif() -> Result<(), Box<dyn Error>> {
+        // Create a temporary directory for our test
+        let temp_dir = TempDir::new()?;
+
+        // Copy a file with EXIF data
+        let source = Path::new("fixtures/exifdate.jpeg");
+        let result = copy_file(source, temp_dir.path(), false)?;
+
+        // Verify the directory structure and file
+        assert!(result.exists());
+        assert_eq!(
+            result.parent().unwrap().strip_prefix(temp_dir.path())?,
+            Path::new("2020/12/26")
+        );
+        assert_eq!(result.file_name().unwrap(), source.file_name().unwrap());
+
+        // Verify file contents are the same
+        let original = fs::read(source)?;
+        let copied = fs::read(&result)?;
+        assert_eq!(original, copied);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_copy_file_with_creation_date() -> Result<(), Box<dyn Error>> {
+        // Create a temporary directory for our test
+        let temp_dir = TempDir::new()?;
+
+        // Copy a file without EXIF data
+        let source = Path::new("fixtures/exifnodate.heif");
+        let result = copy_file(source, temp_dir.path(), false)?;
+
+        // Verify the file exists and has correct name
+        assert!(result.exists());
+        assert_eq!(result.file_name().unwrap(), source.file_name().unwrap());
+
+        // Verify the directory structure follows YYYY/MM/DD pattern
+        let relative_path = result.parent().unwrap().strip_prefix(temp_dir.path())?;
+        let path_str = relative_path.to_str().unwrap();
+        assert!(path_str.matches('/').count() == 2); // Should have two slashes for YYYY/MM/DD
+
+        // Verify file contents are the same
+        let original = fs::read(source)?;
+        let copied = fs::read(&result)?;
+        assert_eq!(original, copied);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_process_path_single_file() -> Result<(), Box<dyn Error>> {
+        let temp_dir = TempDir::new()?;
+        let source = Path::new("fixtures/exifdate.jpeg");
+
+        let results = process_path(source, temp_dir.path(), false, false)?;
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].exists());
+        assert_eq!(results[0].file_name().unwrap(), source.file_name().unwrap());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_process_path_directory_without_recursive() {
+        let temp_dir = TempDir::new().unwrap();
+        let source = Path::new("fixtures");
+
+        let result = process_path(source, temp_dir.path(), false, false);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Use --recursive"));
+    }
+
+    #[test]
+    fn test_process_path_recursive() -> Result<(), Box<dyn Error>> {
+        let temp_dir = TempDir::new()?;
+        let source = Path::new("fixtures");
+
+        let results = process_path(source, temp_dir.path(), true, false)?;
+
+        // Verify we copied some files
+        assert!(!results.is_empty());
+
+        // Verify each copied file exists and has correct structure
+        for path in &results {
+            assert!(path.exists());
+            assert!(path.is_file());
+
+            // Verify directory structure
+            let relative = path.parent().unwrap().strip_prefix(temp_dir.path())?;
+            let path_str = relative.to_str().unwrap();
+            assert_eq!(path_str.matches('/').count(), 2); // YYYY/MM/DD structure
+        }
+
+        // Verify we copied both our test files
+        let file_names: Vec<_> = results.iter()
+            .map(|p| p.file_name().unwrap().to_str().unwrap())
+            .collect();
+        assert!(file_names.contains(&"exifdate.jpeg"));
+        assert!(file_names.contains(&"exifnodate.heif"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_generate_uuid_filename() {
+        // Test with extension
+        let path = Path::new("test.jpg");
+        let result = generate_uuid_filename(path);
+        let result_str = result.to_str().unwrap();
+
+        assert!(result_str.ends_with(".jpg"));
+        assert_eq!(result_str.len(), 40); // 36 chars for UUID + 4 for '.jpg'
+        assert!(result_str.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '.')); // Verify lowercase, numbers, and dashes
+
+        // Test without extension
+        let path = Path::new("test");
+        let result = generate_uuid_filename(path);
+        let result_str = result.to_str().unwrap();
+
+        assert_eq!(result_str.len(), 36); // Just UUID
+        assert!(!result_str.contains("."));
+        assert!(result_str.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')); // Verify lowercase, numbers, and dashes
     }
 }
