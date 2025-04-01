@@ -1,5 +1,7 @@
 # Machiver
 
+[![CI](https://github.com/awead/machiver/actions/workflows/ci.yml/badge.svg)](https://github.com/awead/machiver/actions/workflows/ci.yml)
+
 A multi-purpose tool for archiving files. It assumes files will be organized into BagIt bags.
 
 ## Installation
