@@ -1,9 +1,41 @@
-use std::env;
 use std::fs::{File, metadata};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use exif::{Reader, Tag, In};
 use std::error::Error;
 use chrono::{NaiveDateTime, DateTime, Local};
+use clap::{Parser, Subcommand};
+
+#[derive(Parser)]
+#[command(name = "machiver")]
+#[command(about = "A tool for archiving files into BagIt bags")]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+
+    /// Returns the date the file was created.
+    ///
+    /// If the file contains EXIF data, the date will be extracted from the EXIF data.
+    /// Otherwise, the file's creation time will be returned.
+    Date {
+        /// Path to the image file
+        file: PathBuf,
+    },
+
+    /// Copies files to a new location using the date extracted from the file's metadata. (see Date subcommand)
+    ///
+    /// Directories will be created relative to the destination directory following the ISO8601 format.
+    /// If no destination is specified, the current directory will be used.
+    Copy {
+        /// Source image file
+        source: PathBuf,
+        /// Destination directory
+        destination: PathBuf,
+    },
+}
 
 fn get_date(path: &Path) -> Result<NaiveDateTime, Box<dyn Error>> {
     // Try to get EXIF date first
@@ -28,17 +60,27 @@ fn get_date(path: &Path) -> Result<NaiveDateTime, Box<dyn Error>> {
 }
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    if args.len() != 2 {
-        println!("Usage: {} <image_file>", args[0]);
-        return;
-    }
+    let cli = Cli::parse();
 
-    let path = Path::new(&args[1]);
-
-    match get_date(path) {
-        Ok(datetime) => println!("{}", datetime),
-        Err(e) => println!("{}", e),
+    match cli.command {
+        Commands::Date { file } => {
+            match get_date(&file) {
+                Ok(datetime) => println!("{}", datetime),
+                Err(e) => println!("{}", e),
+            }
+        },
+        Commands::Copy { source, destination } => {
+            match get_date(&source) {
+                Ok(datetime) => {
+                    println!("Would copy {} to {} using date {}",
+                        source.display(),
+                        destination.display(),
+                        datetime
+                    );
+                },
+                Err(e) => println!("{}", e),
+            }
+        },
     }
 }
 
