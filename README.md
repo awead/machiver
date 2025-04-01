@@ -1,28 +1,35 @@
-# Image Metadata Extractor
+# Machiver
 
-A simple Rust program that extracts EXIF metadata from image files using the `kamadak-exif` crate.
+A multi-purpose tool for archiving files. It assumes files will be organized into BagIt bags.
+
+## Installation
+
+To install machiver, you'll need Rust installed on your system. Then run:
+
+```bash
+cargo install --path .
+```
+
+This will compile the binary and install it in your Cargo binary directory (usually `~/.cargo/bin`).
 
 ## Features
 
-- Extracts common EXIF metadata including:
-  - Date/Time
-  - Camera Make and Model
-  - Exposure Time
-  - F-Number
-  - ISO Speed
+Builds a directory of files based on their creation date and time. Exif data is preferred, but if none is available, the file's creation time is used instead.
 
 ## Usage
 
+### Date
+
+Returns the date the file was created:
+
 ```bash
-cargo run -- <path_to_image>
+machiver date <path_to_image>
 ```
 
-For example:
+### Copy
+
+Copies files to a new location using the date extracted from the file's metadata, with the option to rename files using a randomly generated UUID.
+
 ```bash
-cargo run -- path/to/your/photo.jpg
+machiver copy <source> <destination> --recursive --rename
 ```
-
-## Requirements
-
-- Rust (2021 edition or later)
-- The program works with image files that contain EXIF metadata (typically JPEG and TIFF files)
