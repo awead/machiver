@@ -1,54 +1,37 @@
-# The MacHiver
+# Machiver
 
-Swiss army knife of some random archiving tools.
+[![CI](https://github.com/awead/machiver/actions/workflows/ci.yml/badge.svg)](https://github.com/awead/machiver/actions/workflows/ci.yml)
 
-## Getting Started
+A multi-purpose tool for archiving files. It assumes files will be organized into BagIt bags.
 
-Build the image:
+## Installation
 
-``` bash
-docker build -t machiver .
+To install machiver, you'll need Rust installed on your system. Then run:
+
+```bash
+cargo install --path .
 ```
 
-## Generate a Data Directory of Photos
+This will compile the binary and install it in your Cargo binary directory (usually `~/.cargo/bin`).
 
-Moves photos from an existing source into a new directory, creating a new UUID name, and organized according to the date
-the photo was taken.
+## Features
 
-### Test Run
+Builds a directory of files based on their creation date and time. Exif data is preferred, but if none is available, the file's creation time is used instead.
 
-``` bash
-docker run --rm -v $(pwd):/data -it machiver archive-photo -iR
+## Usage
+
+### Date
+
+Returns the date the file was created:
+
+```bash
+machiver date <path_to_image>
 ```
 
-### Move Files
+### Copy
 
+Copies files to a new location using the date extracted from the file's metadata, with the option to rename files using a randomly generated UUID.
 
-``` bash
-docker run --rm -v $(pwd):/data -it machiver archive-photo -R -x heic -a output
-docker run --rm -v $(pwd):/data -it machiver archive-photo -R -x jpeg -a output
-docker run --rm -v $(pwd):/data -it machiver archive-photo -R -x jpg -a output
-docker run --rm -v $(pwd):/data -it machiver archive-photo -R -x mov -a output
-docker run --rm -v $(pwd):/data -it machiver archive-photo -R -x mp4 -a output
-docker run --rm -v $(pwd):/data -it machiver archive-photo -R -x png -a output
-```
-
-## Dedup a Bag
-
-### Find Duplicates (in bag only)
-
-``` bash
-docker run --rm -v $(pwd):/data -it machiver dedup-bag laptop-bag
-```
-
-### Find Duplicates Using a Different Manifest
-
-``` bash
-docker run --rm -v $(pwd):/data -it machiver dedup-bag -m manifest-md5.txt laptop-bag
-```
-
-### Remove Duplicates
-
-``` bash
-docker run --rm -v $(pwd):/data -it machiver dedup-bag -x laptop-bag
+```bash
+machiver copy <source> <destination> --recursive --rename
 ```
