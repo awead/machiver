@@ -42,6 +42,9 @@ enum Commands {
         /// Rename files using a randomly generated UUID
         #[arg(short = 'm', long)]
         rename: bool,
+        /// Path to a manifest file
+        #[arg(short = 'c', long)]
+        manifest: Option<PathBuf>,
     },
 }
 
@@ -140,7 +143,7 @@ fn main() {
                 Err(e) => println!("{}", e),
             }
         },
-        Commands::Copy { source, destination, recursive, rename } => {
+        Commands::Copy { source, destination, recursive, rename, manifest } => {
             match process_path(&source, &destination, recursive, rename) {
                 Ok(copied_files) => {
                     for path in copied_files {
