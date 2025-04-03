@@ -178,37 +178,12 @@ fn main() {
             }
         },
         Commands::Copy { source, destination, recursive, rename, manifest } => {
-            if let Some(ref manifest_path) = manifest {
-                match parse_manifest(&manifest_path) {
-                    Ok(paths) => {
-                        for path in paths {
-                            let config = Config {
-                                path: &path,
-                                destination: &destination,
-                                recursive,
-                                rename,
-                                manifest: None,
-                            };
-                            match process_path(&config) {
-                                Ok(copied_files) => {
-                                    for path in copied_files {
-                                        println!("Copied to {}", path.display());
-                                    }
-                                },
-                                Err(e) => println!("Error processing {}: {}", path.display(), e),
-                            }
-                        }
-                    },
-                    Err(e) => println!("Error reading manifest: {}", e),
-                }
-            }
-
             let config = Config {
                 path: &source,
                 destination: &destination,
                 recursive,
                 rename,
-                manifest: manifest.as_ref().map(|m| parse_manifest(&m).unwrap_or_default()),
+                manifest: manifest.as_ref().and_then(|m| parse_manifest(m).ok()),
             };
             match process_path(&config) {
                 Ok(copied_files) => {
