@@ -14,6 +14,15 @@ struct Cli {
     command: Commands,
 }
 
+#[derive(Debug)]
+struct CopyConfig<'a> {
+    path: &'a Path,
+    destination: &'a Path,
+    recursive: bool,
+    rename: bool,
+    manifest: Option<Vec<String>>,
+}
+
 #[derive(Subcommand)]
 enum Commands {
 
@@ -42,6 +51,9 @@ enum Commands {
         /// Rename files using a randomly generated UUID
         #[arg(short = 'm', long)]
         rename: bool,
+        /// Path to a manifest file
+        #[arg(short = 'c', long)]
+        manifest: Option<PathBuf>,
     },
 }
 
@@ -67,20 +79,27 @@ fn get_date(path: &Path) -> Result<NaiveDateTime, Box<dyn Error>> {
     Ok(datetime.naive_local())
 }
 
-fn process_path(source: &Path, destination: &Path, recursive: bool, rename: bool) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+fn process_path(config: &CopyConfig) -> Result<Vec<PathBuf>, Box<dyn Error>> {
     let mut copied_files = Vec::new();
 
-    if source.is_file() {
-        copied_files.push(copy_file(source, destination, rename)?);
-    } else if source.is_dir() && recursive {
-        for entry in fs::read_dir(source)? {
+    if config.path.is_file() {
+        copied_files.push(copy_file(config.path, config.destination, config.rename, config.manifest.as_ref())?);
+    } else if config.path.is_dir() && config.recursive {
+        for entry in fs::read_dir(config.path)? {
             let entry = entry?;
             let path = entry.path();
-            copied_files.extend(process_path(&path, destination, recursive, rename)?);
+            let nested_config = CopyConfig {
+                path: &path,
+                destination: config.destination,
+                recursive: config.recursive,
+                rename: config.rename,
+                manifest: config.manifest.clone(),
+            };
+            copied_files.extend(process_path(&nested_config)?);
         }
-    } else if source.is_dir() {
+    } else if config.path.is_dir() {
         return Err(format!("'{}' is a directory. Use --recursive to process directories",
-            source.display()).into());
+            config.path.display()).into());
     }
 
     Ok(copied_files)
@@ -100,7 +119,29 @@ fn generate_uuid_filename(original: &Path) -> PathBuf {
     }
 }
 
-fn copy_file(source: &Path, destination: &Path, rename: bool) -> Result<PathBuf, Box<dyn Error>> {
+fn is_duplicate(source: &Path, manifest: Option<&Vec<String>>) -> Result<Option<PathBuf>, Box<dyn Error>> {
+    let Some(manifest_paths) = manifest else { return Ok(None) };
+    
+    let mut file = File::open(source)?;
+    let mut context = md5::Context::new();
+    std::io::copy(&mut file, &mut context)?;
+    let digest = format!("{:x}", context.compute());
+
+    // Check if this MD5 exists in the manifest
+    for checksum in manifest_paths {
+        if digest == *checksum {
+            return Ok(Some(source.to_path_buf()));
+        }
+    }
+    Ok(None)
+}
+
+fn copy_file(source: &Path, destination: &Path, rename: bool, manifest: Option<&Vec<String>>) -> Result<PathBuf, Box<dyn Error>> {
+    // Check for duplicates if manifest is provided
+    if let Some(duplicate_path) = is_duplicate(source, manifest)? {
+        println!("Skipping duplicate file");
+        return Ok(duplicate_path);
+    }
     let date = get_date(source)?;
 
     // Create the date-based directory structure
@@ -130,6 +171,24 @@ fn copy_file(source: &Path, destination: &Path, rename: bool) -> Result<PathBuf,
     Ok(target_path)
 }
 
+fn parse_manifest(path: &Path) -> Result<Vec<String>, Box<dyn Error>> {
+    let content = fs::read_to_string(path)?;
+    let checksums: Vec<String> = content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            parts[0].to_string()
+        })
+        .collect();
+
+    if checksums.is_empty() {
+        return Err("Manifest file is empty".into());
+    }
+
+    Ok(checksums)
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -140,8 +199,15 @@ fn main() {
                 Err(e) => println!("{}", e),
             }
         },
-        Commands::Copy { source, destination, recursive, rename } => {
-            match process_path(&source, &destination, recursive, rename) {
+        Commands::Copy { source, destination, recursive, rename, manifest } => {
+            let config = CopyConfig {
+                path: &source,
+                destination: &destination,
+                recursive,
+                rename,
+                manifest: manifest.as_ref().and_then(|m| parse_manifest(m).ok()),
+            };
+            match process_path(&config) {
                 Ok(copied_files) => {
                     for path in copied_files {
                         println!("Copied to {}", path.display());
@@ -158,7 +224,44 @@ mod tests {
     use super::*;
     use chrono::{NaiveDate, Datelike};
     use tempfile::TempDir;
+    use std::collections::HashSet;
     use std::fs;
+
+    #[test]
+    fn test_is_duplicate() -> Result<(), Box<dyn Error>> {
+        // Create a temporary directory
+        let temp_dir = TempDir::new()?;
+
+        // Create two identical files
+        let file1_path = temp_dir.path().join("file1.txt");
+        let file2_path = temp_dir.path().join("file2.txt");
+        let file3_path = temp_dir.path().join("file3.txt");
+
+        fs::write(&file1_path, b"test content")?;
+        fs::write(&file2_path, b"test content")?;  // Same content as file1
+        fs::write(&file3_path, b"different content")?;
+
+        // Test with no manifest (should return None)
+        assert!(is_duplicate(&file1_path, None)?.is_none());
+
+        // Calculate MD5 of file1
+        let mut file = File::open(&file1_path)?;
+        let mut context = md5::Context::new();
+        std::io::copy(&mut file, &mut context)?;
+        let file1_md5 = format!("{:x}", context.compute());
+
+        // Test with manifest containing no duplicates
+        let manifest = vec!["different_md5_hash".to_string()];
+        assert!(is_duplicate(&file1_path, Some(&manifest))?.is_none());
+
+        // Test with manifest containing a duplicate
+        let manifest = vec![file1_md5];
+        let result = is_duplicate(&file1_path, Some(&manifest))?;
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), file1_path);
+
+        Ok(())
+    }
 
     #[test]
     fn test_exif_date() {
@@ -180,13 +283,45 @@ mod tests {
     }
 
     #[test]
+    fn test_copy_file_with_duplicates() -> Result<(), Box<dyn Error>> {
+        let temp_dir = TempDir::new()?;
+        let source = Path::new("fixtures/exifdate.jpeg");
+
+        // First, calculate the MD5 of the source file
+        let mut file = File::open(source)?;
+        let mut context = md5::Context::new();
+        std::io::copy(&mut file, &mut context)?;
+        let source_md5 = format!("{:x}", context.compute());
+
+        // Create a manifest with the source file's MD5
+        let manifest = vec![source_md5];
+
+        // Try to copy the file - it should be skipped
+        let result = copy_file(source, temp_dir.path(), false, Some(&manifest))?;
+
+        // Verify the file wasn't actually copied
+        assert!(!result.starts_with(temp_dir.path()), "File should not have been copied to temp dir");
+        assert_eq!(result, source, "Should return the source path for duplicates");
+
+        // Now try with a different MD5 in the manifest
+        let manifest = vec!["different_md5_hash".to_string()];
+        let result = copy_file(source, temp_dir.path(), false, Some(&manifest))?;
+
+        // Verify the file was copied this time
+        assert!(result.starts_with(temp_dir.path()), "File should have been copied to temp dir");
+        assert!(result.exists(), "Copied file should exist");
+
+        Ok(())
+    }
+
+    #[test]
     fn test_copy_file_with_exif() -> Result<(), Box<dyn Error>> {
         // Create a temporary directory for our test
         let temp_dir = TempDir::new()?;
 
         // Copy a file with EXIF data
         let source = Path::new("fixtures/exifdate.jpeg");
-        let result = copy_file(source, temp_dir.path(), false)?;
+        let result = copy_file(source, temp_dir.path(), false, None)?;
 
         // Verify the directory structure and file
         assert!(result.exists());
@@ -211,7 +346,7 @@ mod tests {
 
         // Copy a file without EXIF data
         let source = Path::new("fixtures/exifnodate.heif");
-        let result = copy_file(source, temp_dir.path(), false)?;
+        let result = copy_file(source, temp_dir.path(), false, None)?;
 
         // Verify the file exists and has correct name
         assert!(result.exists());
@@ -235,7 +370,14 @@ mod tests {
         let temp_dir = TempDir::new()?;
         let source = Path::new("fixtures/exifdate.jpeg");
 
-        let results = process_path(source, temp_dir.path(), false, false)?;
+        let config = CopyConfig {
+            path: source,
+            destination: temp_dir.path(),
+            recursive: false,
+            rename: false,
+            manifest: None,
+        };
+        let results = process_path(&config)?;
 
         assert_eq!(results.len(), 1);
         assert!(results[0].exists());
@@ -249,7 +391,14 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let source = Path::new("fixtures");
 
-        let result = process_path(source, temp_dir.path(), false, false);
+        let config = CopyConfig {
+            path: source,
+            destination: temp_dir.path(),
+            recursive: false,
+            rename: false,
+            manifest: None,
+        };
+        let result = process_path(&config);
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Use --recursive"));
@@ -260,7 +409,14 @@ mod tests {
         let temp_dir = TempDir::new()?;
         let source = Path::new("fixtures");
 
-        let results = process_path(source, temp_dir.path(), true, false)?;
+        let config = CopyConfig {
+            path: source,
+            destination: temp_dir.path(),
+            recursive: true,
+            rename: false,
+            manifest: None,
+        };
+        let results = process_path(&config)?;
 
         // Verify we copied some files
         assert!(!results.is_empty());
@@ -283,6 +439,24 @@ mod tests {
         assert!(file_names.contains(&"exifdate.jpeg"));
         assert!(file_names.contains(&"exifnodate.heif"));
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_manifest() -> Result<(), Box<dyn Error>> {
+        let manifest_path = Path::new("fixtures/good-bag/manifest-md5.txt");
+        let checksums = parse_manifest(manifest_path)?;
+
+        // Convert to a set for easier comparison
+        let checksum_set: HashSet<String> = checksums.into_iter().collect();
+
+        // Expected hashes from manifest-md5.txt
+        let expected_hashes: HashSet<String> = vec![
+            "3b5d5c3712955042212316173ccf37be".to_string(),
+            "60b725f10c9c85c70d97880dfe8191b3".to_string(),
+        ].into_iter().collect();
+
+        assert_eq!(checksum_set, expected_hashes);
         Ok(())
     }
 
