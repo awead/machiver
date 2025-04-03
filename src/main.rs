@@ -20,6 +20,7 @@ struct Config<'a> {
     destination: &'a Path,
     recursive: bool,
     rename: bool,
+    manifest: Option<Vec<PathBuf>>,
 }
 
 #[derive(Subcommand)]
@@ -92,6 +93,7 @@ fn process_path(config: &Config) -> Result<Vec<PathBuf>, Box<dyn Error>> {
                 destination: config.destination,
                 recursive: config.recursive,
                 rename: config.rename,
+                manifest: config.manifest.clone(),
             };
             copied_files.extend(process_path(&nested_config)?);
         }
@@ -176,7 +178,7 @@ fn main() {
             }
         },
         Commands::Copy { source, destination, recursive, rename, manifest } => {
-            if let Some(manifest_path) = manifest {
+            if let Some(ref manifest_path) = manifest {
                 match parse_manifest(&manifest_path) {
                     Ok(paths) => {
                         for path in paths {
@@ -185,6 +187,7 @@ fn main() {
                                 destination: &destination,
                                 recursive,
                                 rename,
+                                manifest: None,
                             };
                             match process_path(&config) {
                                 Ok(copied_files) => {
@@ -205,6 +208,7 @@ fn main() {
                 destination: &destination,
                 recursive,
                 rename,
+                manifest: manifest.as_ref().map(|m| parse_manifest(&m).unwrap_or_default()),
             };
             match process_path(&config) {
                 Ok(copied_files) => {
@@ -306,6 +310,7 @@ mod tests {
             destination: temp_dir.path(),
             recursive: false,
             rename: false,
+            manifest: None,
         };
         let results = process_path(&config)?;
 
@@ -326,6 +331,7 @@ mod tests {
             destination: temp_dir.path(),
             recursive: false,
             rename: false,
+            manifest: None,
         };
         let result = process_path(&config);
 
@@ -343,6 +349,7 @@ mod tests {
             destination: temp_dir.path(),
             recursive: true,
             rename: false,
+            manifest: None,
         };
         let results = process_path(&config)?;
 
