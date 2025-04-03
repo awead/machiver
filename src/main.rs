@@ -15,7 +15,7 @@ struct Cli {
 }
 
 #[derive(Debug)]
-struct Config<'a> {
+struct CopyConfig<'a> {
     path: &'a Path,
     destination: &'a Path,
     recursive: bool,
@@ -79,7 +79,7 @@ fn get_date(path: &Path) -> Result<NaiveDateTime, Box<dyn Error>> {
     Ok(datetime.naive_local())
 }
 
-fn process_path(config: &Config) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+fn process_path(config: &CopyConfig) -> Result<Vec<PathBuf>, Box<dyn Error>> {
     let mut copied_files = Vec::new();
 
     if config.path.is_file() {
@@ -88,7 +88,7 @@ fn process_path(config: &Config) -> Result<Vec<PathBuf>, Box<dyn Error>> {
         for entry in fs::read_dir(config.path)? {
             let entry = entry?;
             let path = entry.path();
-            let nested_config = Config {
+            let nested_config = CopyConfig {
                 path: &path,
                 destination: config.destination,
                 recursive: config.recursive,
@@ -178,7 +178,7 @@ fn main() {
             }
         },
         Commands::Copy { source, destination, recursive, rename, manifest } => {
-            let config = Config {
+            let config = CopyConfig {
                 path: &source,
                 destination: &destination,
                 recursive,
@@ -280,7 +280,7 @@ mod tests {
         let temp_dir = TempDir::new()?;
         let source = Path::new("fixtures/exifdate.jpeg");
 
-        let config = Config {
+        let config = CopyConfig {
             path: source,
             destination: temp_dir.path(),
             recursive: false,
@@ -301,7 +301,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let source = Path::new("fixtures");
 
-        let config = Config {
+        let config = CopyConfig {
             path: source,
             destination: temp_dir.path(),
             recursive: false,
@@ -319,7 +319,7 @@ mod tests {
         let temp_dir = TempDir::new()?;
         let source = Path::new("fixtures");
 
-        let config = Config {
+        let config = CopyConfig {
             path: source,
             destination: temp_dir.path(),
             recursive: true,
