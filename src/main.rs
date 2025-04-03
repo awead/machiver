@@ -14,6 +14,14 @@ struct Cli {
     command: Commands,
 }
 
+#[derive(Debug)]
+struct Config<'a> {
+    path: &'a Path,
+    destination: &'a Path,
+    recursive: bool,
+    rename: bool,
+}
+
 #[derive(Subcommand)]
 enum Commands {
 
@@ -70,20 +78,26 @@ fn get_date(path: &Path) -> Result<NaiveDateTime, Box<dyn Error>> {
     Ok(datetime.naive_local())
 }
 
-fn process_path(source: &Path, destination: &Path, recursive: bool, rename: bool) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+fn process_path(config: &Config) -> Result<Vec<PathBuf>, Box<dyn Error>> {
     let mut copied_files = Vec::new();
 
-    if source.is_file() {
-        copied_files.push(copy_file(source, destination, rename)?);
-    } else if source.is_dir() && recursive {
-        for entry in fs::read_dir(source)? {
+    if config.path.is_file() {
+        copied_files.push(copy_file(config.path, config.destination, config.rename)?);
+    } else if config.path.is_dir() && config.recursive {
+        for entry in fs::read_dir(config.path)? {
             let entry = entry?;
             let path = entry.path();
-            copied_files.extend(process_path(&path, destination, recursive, rename)?);
+            let nested_config = Config {
+                path: &path,
+                destination: config.destination,
+                recursive: config.recursive,
+                rename: config.rename,
+            };
+            copied_files.extend(process_path(&nested_config)?);
         }
-    } else if source.is_dir() {
+    } else if config.path.is_dir() {
         return Err(format!("'{}' is a directory. Use --recursive to process directories",
-            source.display()).into());
+            config.path.display()).into());
     }
 
     Ok(copied_files)
@@ -143,11 +157,11 @@ fn parse_manifest(path: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
             PathBuf::from(parts[0])
         })
         .collect();
-    
+
     if paths.is_empty() {
         return Err("Manifest file is empty".into());
     }
-    
+
     Ok(paths)
 }
 
@@ -166,7 +180,13 @@ fn main() {
                 match parse_manifest(&manifest_path) {
                     Ok(paths) => {
                         for path in paths {
-                            match process_path(&path, &destination, recursive, rename) {
+                            let config = Config {
+                                path: &path,
+                                destination: &destination,
+                                recursive,
+                                rename,
+                            };
+                            match process_path(&config) {
                                 Ok(copied_files) => {
                                     for path in copied_files {
                                         println!("Copied to {}", path.display());
@@ -179,8 +199,14 @@ fn main() {
                     Err(e) => println!("Error reading manifest: {}", e),
                 }
             }
-            
-            match process_path(&source, &destination, recursive, rename) {
+
+            let config = Config {
+                path: &source,
+                destination: &destination,
+                recursive,
+                rename,
+            };
+            match process_path(&config) {
                 Ok(copied_files) => {
                     for path in copied_files {
                         println!("Copied to {}", path.display());
@@ -275,7 +301,13 @@ mod tests {
         let temp_dir = TempDir::new()?;
         let source = Path::new("fixtures/exifdate.jpeg");
 
-        let results = process_path(source, temp_dir.path(), false, false)?;
+        let config = Config {
+            path: source,
+            destination: temp_dir.path(),
+            recursive: false,
+            rename: false,
+        };
+        let results = process_path(&config)?;
 
         assert_eq!(results.len(), 1);
         assert!(results[0].exists());
@@ -289,7 +321,13 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let source = Path::new("fixtures");
 
-        let result = process_path(source, temp_dir.path(), false, false);
+        let config = Config {
+            path: source,
+            destination: temp_dir.path(),
+            recursive: false,
+            rename: false,
+        };
+        let result = process_path(&config);
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Use --recursive"));
@@ -300,7 +338,13 @@ mod tests {
         let temp_dir = TempDir::new()?;
         let source = Path::new("fixtures");
 
-        let results = process_path(source, temp_dir.path(), true, false)?;
+        let config = Config {
+            path: source,
+            destination: temp_dir.path(),
+            recursive: true,
+            rename: false,
+        };
+        let results = process_path(&config)?;
 
         // Verify we copied some files
         assert!(!results.is_empty());
@@ -330,19 +374,19 @@ mod tests {
     fn test_parse_manifest() -> Result<(), Box<dyn Error>> {
         let manifest_path = Path::new("fixtures/good-bag/manifest-md5.txt");
         let paths = parse_manifest(manifest_path)?;
-        
+
         // Convert to a set of strings for easier comparison
         let path_strings: HashSet<String> = paths
             .iter()
             .map(|p| p.to_string_lossy().into_owned())
             .collect();
-        
+
         // Expected hashes from manifest-md5.txt
         let expected_hashes: HashSet<String> = vec![
             "3b5d5c3712955042212316173ccf37be".to_string(),
             "60b725f10c9c85c70d97880dfe8191b3".to_string(),
         ].into_iter().collect();
-        
+
         assert_eq!(path_strings, expected_hashes);
         Ok(())
     }
