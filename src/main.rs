@@ -133,6 +133,24 @@ fn copy_file(source: &Path, destination: &Path, rename: bool) -> Result<PathBuf,
     Ok(target_path)
 }
 
+fn parse_manifest(path: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    let content = fs::read_to_string(path)?;
+    let paths: Vec<PathBuf> = content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            PathBuf::from(parts[0])
+        })
+        .collect();
+    
+    if paths.is_empty() {
+        return Err("Manifest file is empty".into());
+    }
+    
+    Ok(paths)
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -144,6 +162,24 @@ fn main() {
             }
         },
         Commands::Copy { source, destination, recursive, rename, manifest } => {
+            if let Some(manifest_path) = manifest {
+                match parse_manifest(&manifest_path) {
+                    Ok(paths) => {
+                        for path in paths {
+                            match process_path(&path, &destination, recursive, rename) {
+                                Ok(copied_files) => {
+                                    for path in copied_files {
+                                        println!("Copied to {}", path.display());
+                                    }
+                                },
+                                Err(e) => println!("Error processing {}: {}", path.display(), e),
+                            }
+                        }
+                    },
+                    Err(e) => println!("Error reading manifest: {}", e),
+                }
+            }
+            
             match process_path(&source, &destination, recursive, rename) {
                 Ok(copied_files) => {
                     for path in copied_files {
@@ -161,6 +197,7 @@ mod tests {
     use super::*;
     use chrono::{NaiveDate, Datelike};
     use tempfile::TempDir;
+    use std::collections::HashSet;
     use std::fs;
 
     #[test]
@@ -286,6 +323,27 @@ mod tests {
         assert!(file_names.contains(&"exifdate.jpeg"));
         assert!(file_names.contains(&"exifnodate.heif"));
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_manifest() -> Result<(), Box<dyn Error>> {
+        let manifest_path = Path::new("fixtures/good-bag/manifest-md5.txt");
+        let paths = parse_manifest(manifest_path)?;
+        
+        // Convert to a set of strings for easier comparison
+        let path_strings: HashSet<String> = paths
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        
+        // Expected hashes from manifest-md5.txt
+        let expected_hashes: HashSet<String> = vec![
+            "3b5d5c3712955042212316173ccf37be".to_string(),
+            "60b725f10c9c85c70d97880dfe8191b3".to_string(),
+        ].into_iter().collect();
+        
+        assert_eq!(path_strings, expected_hashes);
         Ok(())
     }
 
