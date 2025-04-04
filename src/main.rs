@@ -1,10 +1,13 @@
-use std::fs::{self, File, metadata};
+use std::fs::metadata;
 use std::path::{Path, PathBuf};
 use exif::{Reader, Tag, In};
 use std::error::Error;
 use chrono::{NaiveDateTime, DateTime, Local, Datelike};
 use clap::{Parser, Subcommand};
 use uuid::Uuid;
+use tokio::fs::File;
+use tokio::io::AsyncReadExt;
+use async_std::fs as async_fs;
 
 #[derive(Parser)]
 #[command(name = "machiver")]
@@ -57,11 +60,14 @@ enum Commands {
     },
 }
 
-fn get_date(path: &Path) -> Result<NaiveDateTime, Box<dyn Error>> {
+async fn get_date(path: &Path) -> Result<NaiveDateTime, Box<dyn Error>> {
     // Try to get EXIF date first
-    let exif_date = File::open(path)
+    let mut file = File::open(path).await?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer).await?;
+    let exif_date = Reader::new()
+        .read_from_container(&mut std::io::Cursor::new(buffer))
         .ok()
-        .and_then(|file| Reader::new().read_from_container(&mut std::io::BufReader::new(file)).ok())
         .and_then(|exif| {
             exif.get_field(Tag::DateTime, In::PRIMARY)
                 .map(|field| field.display_value().to_string())
@@ -79,14 +85,18 @@ fn get_date(path: &Path) -> Result<NaiveDateTime, Box<dyn Error>> {
     Ok(datetime.naive_local())
 }
 
-fn process_path(config: &CopyConfig) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+async fn process_path<'a>(config: &'a CopyConfig<'a>) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    Box::pin(_process_path(config)).await
+}
+
+async fn _process_path<'a>(config: &'a CopyConfig<'a>) -> Result<Vec<PathBuf>, Box<dyn Error>> {
     let mut copied_files = Vec::new();
 
     if config.path.is_file() {
-        copied_files.push(copy_file(config.path, config.destination, config.rename, config.manifest.as_ref())?);
+        copied_files.push(copy_file(config.path, config.destination, config.rename, config.manifest.as_ref()).await?);
     } else if config.path.is_dir() && config.recursive {
-        for entry in fs::read_dir(config.path)? {
-            let entry = entry?;
+        let mut entries = tokio::fs::read_dir(config.path).await?;
+        while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
             let nested_config = CopyConfig {
                 path: &path,
@@ -95,7 +105,8 @@ fn process_path(config: &CopyConfig) -> Result<Vec<PathBuf>, Box<dyn Error>> {
                 rename: config.rename,
                 manifest: config.manifest.clone(),
             };
-            copied_files.extend(process_path(&nested_config)?);
+            let nested_results = Box::pin(_process_path(&nested_config)).await?;
+            copied_files.extend(nested_results);
         }
     } else if config.path.is_dir() {
         return Err(format!("'{}' is a directory. Use --recursive to process directories",
@@ -119,12 +130,14 @@ fn generate_uuid_filename(original: &Path) -> PathBuf {
     }
 }
 
-fn is_duplicate(source: &Path, manifest: Option<&Vec<String>>) -> Result<Option<PathBuf>, Box<dyn Error>> {
+async fn is_duplicate(source: &Path, manifest: Option<&Vec<String>>) -> Result<Option<PathBuf>, Box<dyn Error>> {
     let Some(manifest_paths) = manifest else { return Ok(None) };
 
-    let mut file = File::open(source)?;
+    let mut file = File::open(source).await?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer).await?;
     let mut context = md5::Context::new();
-    std::io::copy(&mut file, &mut context)?;
+    context.consume(&buffer);
     let digest = format!("{:x}", context.compute());
 
     // Check if this MD5 exists in the manifest
@@ -136,16 +149,16 @@ fn is_duplicate(source: &Path, manifest: Option<&Vec<String>>) -> Result<Option<
     Ok(None)
 }
 
-fn copy_file(source: &Path, destination: &Path, rename: bool, manifest: Option<&Vec<String>>) -> Result<PathBuf, Box<dyn Error>> {
+async fn copy_file(source: &Path, destination: &Path, rename: bool, manifest: Option<&Vec<String>>) -> Result<PathBuf, Box<dyn Error>> {
     print!("Copying {}\t\t", source.file_name().unwrap_or_default().to_string_lossy());
 
     // Check for duplicates if manifest is provided
-    if let Some(duplicate_path) = is_duplicate(source, manifest)? {
+    if let Some(duplicate_path) = is_duplicate(source, manifest).await? {
         println!("(duplicate)");
         return Ok(duplicate_path);
     }
 
-    let date = get_date(source)?;
+    let date = get_date(source).await?;
 
     // Create the date-based directory structure
     let date_path = PathBuf::from(format!("{}/{:02}/{:02}",
@@ -156,7 +169,7 @@ fn copy_file(source: &Path, destination: &Path, rename: bool, manifest: Option<&
 
     // Combine with destination path
     let target_dir = destination.join(&date_path);
-    fs::create_dir_all(&target_dir)?;
+    async_fs::create_dir_all(&target_dir).await?;
 
     // Get the target filename
     let file_name = if rename {
@@ -169,14 +182,14 @@ fn copy_file(source: &Path, destination: &Path, rename: bool, manifest: Option<&
     let target_path = target_dir.join(file_name);
 
     // Copy the file
-    fs::copy(source, &target_path)?;
+    async_fs::copy(source, &target_path).await?;
     println!("OK!");
 
     Ok(target_path)
 }
 
-fn parse_manifest(path: &Path) -> Result<Vec<String>, Box<dyn Error>> {
-    let content = fs::read_to_string(path)?;
+async fn parse_manifest(path: &Path) -> Result<Vec<String>, Box<dyn Error>> {
+    let content = async_fs::read_to_string(path).await?;
     let checksums: Vec<String> = content
         .lines()
         .filter(|line| !line.trim().is_empty())
@@ -193,12 +206,13 @@ fn parse_manifest(path: &Path) -> Result<Vec<String>, Box<dyn Error>> {
     Ok(checksums)
 }
 
-fn main() {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
 
     match cli.command {
         Commands::Date { file } => {
-            match get_date(&file) {
+            match get_date(&file).await {
                 Ok(datetime) => println!("{}", datetime),
                 Err(e) => println!("{}", e),
             }
@@ -209,14 +223,19 @@ fn main() {
                 destination: &destination,
                 recursive,
                 rename,
-                manifest: manifest.as_ref().and_then(|m| parse_manifest(m).ok()),
+                manifest: if let Some(m) = manifest.as_ref() {
+                    Some(parse_manifest(m).await?)
+                } else {
+                    None
+                },
             };
-            match process_path(&config) {
+            match process_path(&config).await {
                 Ok(copied_files) => println!("Finished! Files processed: {}", copied_files.len()),
                 Err(e) => println!("Error: {}", e),
             }
         },
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -227,8 +246,8 @@ mod tests {
     use std::collections::HashSet;
     use std::fs;
 
-    #[test]
-    fn test_is_duplicate() -> Result<(), Box<dyn Error>> {
+    #[tokio::test]
+    async fn test_is_duplicate() -> Result<(), Box<dyn Error>> {
         // Create a temporary directory
         let temp_dir = TempDir::new()?;
 
@@ -242,62 +261,66 @@ mod tests {
         fs::write(&file3_path, b"different content")?;
 
         // Test with no manifest (should return None)
-        assert!(is_duplicate(&file1_path, None)?.is_none());
+        assert!(is_duplicate(&file1_path, None).await?.is_none());
 
         // Calculate MD5 of file1
-        let mut file = File::open(&file1_path)?;
+        let mut file = File::open(&file1_path).await?;
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer).await?;
         let mut context = md5::Context::new();
-        std::io::copy(&mut file, &mut context)?;
+        context.consume(&buffer);
         let file1_md5 = format!("{:x}", context.compute());
 
         // Test with manifest containing no duplicates
         let manifest = vec!["different_md5_hash".to_string()];
-        assert!(is_duplicate(&file1_path, Some(&manifest))?.is_none());
+        assert!(is_duplicate(&file1_path, Some(&manifest)).await?.is_none());
 
         // Test with manifest containing a duplicate
         let manifest = vec![file1_md5];
-        let result = is_duplicate(&file1_path, Some(&manifest))?;
+        let result = is_duplicate(&file1_path, Some(&manifest)).await?;
         assert!(result.is_some());
         assert_eq!(result.unwrap(), file1_path);
 
         Ok(())
     }
 
-    #[test]
-    fn test_exif_date() {
+    #[tokio::test]
+    async fn test_exif_date() {
         let path = Path::new("fixtures/exifdate.jpeg");
-        let result = get_date(path).unwrap();
+        let result = get_date(path).await.unwrap();
         assert_eq!(
             result.date(),
             NaiveDate::from_ymd_opt(2020, 12, 26).unwrap()
         );
     }
 
-    #[test]
-    fn test_file_creation_date() {
+    #[tokio::test]
+    async fn test_file_creation_date() {
         let path = Path::new("fixtures/exifnodate.heif");
-        let result = get_date(path).unwrap();
+        let result = get_date(path).await.unwrap();
         // Since this depends on the file's creation time, we just verify
         // that we get a valid date and don't error
         assert!(result.year() >= 2024);
     }
 
-    #[test]
-    fn test_copy_file_with_duplicates() -> Result<(), Box<dyn Error>> {
+    #[tokio::test]
+    async fn test_copy_file_with_duplicates() -> Result<(), Box<dyn Error>> {
         let temp_dir = TempDir::new()?;
         let source = Path::new("fixtures/exifdate.jpeg");
 
         // First, calculate the MD5 of the source file
-        let mut file = File::open(source)?;
+        let mut file = File::open(source).await?;
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer).await?;
         let mut context = md5::Context::new();
-        std::io::copy(&mut file, &mut context)?;
+        context.consume(&buffer);
         let source_md5 = format!("{:x}", context.compute());
 
         // Create a manifest with the source file's MD5
         let manifest = vec![source_md5];
 
         // Try to copy the file - it should be skipped
-        let result = copy_file(source, temp_dir.path(), false, Some(&manifest))?;
+        let result = copy_file(source, temp_dir.path(), false, Some(&manifest)).await?;
 
         // Verify the file wasn't actually copied
         assert!(!result.starts_with(temp_dir.path()), "File should not have been copied to temp dir");
@@ -305,7 +328,7 @@ mod tests {
 
         // Now try with a different MD5 in the manifest
         let manifest = vec!["different_md5_hash".to_string()];
-        let result = copy_file(source, temp_dir.path(), false, Some(&manifest))?;
+        let result = copy_file(source, temp_dir.path(), false, Some(&manifest)).await?;
 
         // Verify the file was copied this time
         assert!(result.starts_with(temp_dir.path()), "File should have been copied to temp dir");
@@ -314,14 +337,14 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_copy_file_with_exif() -> Result<(), Box<dyn Error>> {
+    #[tokio::test]
+    async fn test_copy_file_with_exif() -> Result<(), Box<dyn Error>> {
         // Create a temporary directory for our test
         let temp_dir = TempDir::new()?;
 
         // Copy a file with EXIF data
         let source = Path::new("fixtures/exifdate.jpeg");
-        let result = copy_file(source, temp_dir.path(), false, None)?;
+        let result = copy_file(source, temp_dir.path(), false, None).await?;
 
         // Verify the directory structure and file
         assert!(result.exists());
@@ -332,21 +355,21 @@ mod tests {
         assert_eq!(result.file_name().unwrap(), source.file_name().unwrap());
 
         // Verify file contents are the same
-        let original = fs::read(source)?;
-        let copied = fs::read(&result)?;
+        let original = async_fs::read(source).await?;
+        let copied = async_fs::read(&result).await?;
         assert_eq!(original, copied);
 
         Ok(())
     }
 
-    #[test]
-    fn test_copy_file_with_creation_date() -> Result<(), Box<dyn Error>> {
+    #[tokio::test]
+    async fn test_copy_file_with_creation_date() -> Result<(), Box<dyn Error>> {
         // Create a temporary directory for our test
         let temp_dir = TempDir::new()?;
 
         // Copy a file without EXIF data
         let source = Path::new("fixtures/exifnodate.heif");
-        let result = copy_file(source, temp_dir.path(), false, None)?;
+        let result = copy_file(source, temp_dir.path(), false, None).await?;
 
         // Verify the file exists and has correct name
         assert!(result.exists());
@@ -358,15 +381,15 @@ mod tests {
         assert!(path_str.matches('/').count() == 2); // Should have two slashes for YYYY/MM/DD
 
         // Verify file contents are the same
-        let original = fs::read(source)?;
-        let copied = fs::read(&result)?;
+        let original = async_fs::read(source).await?;
+        let copied = async_fs::read(&result).await?;
         assert_eq!(original, copied);
 
         Ok(())
     }
 
-    #[test]
-    fn test_process_path_single_file() -> Result<(), Box<dyn Error>> {
+    #[tokio::test]
+    async fn test_process_path_single_file() -> Result<(), Box<dyn Error>> {
         let temp_dir = TempDir::new()?;
         let source = Path::new("fixtures/exifdate.jpeg");
 
@@ -377,7 +400,7 @@ mod tests {
             rename: false,
             manifest: None,
         };
-        let results = process_path(&config)?;
+        let results = process_path(&config).await?;
 
         assert_eq!(results.len(), 1);
         assert!(results[0].exists());
@@ -386,8 +409,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_process_path_directory_without_recursive() {
+    #[tokio::test]
+    async fn test_process_path_directory_without_recursive() {
         let temp_dir = TempDir::new().unwrap();
         let source = Path::new("fixtures");
 
@@ -398,14 +421,14 @@ mod tests {
             rename: false,
             manifest: None,
         };
-        let result = process_path(&config);
+        let result = process_path(&config).await;
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Use --recursive"));
     }
 
-    #[test]
-    fn test_process_path_recursive() -> Result<(), Box<dyn Error>> {
+    #[tokio::test]
+    async fn test_process_path_recursive() -> Result<(), Box<dyn Error>> {
         let temp_dir = TempDir::new()?;
         let source = Path::new("fixtures");
 
@@ -416,7 +439,7 @@ mod tests {
             rename: false,
             manifest: None,
         };
-        let results = process_path(&config)?;
+        let results = process_path(&config).await?;
 
         // Verify we copied some files
         assert!(!results.is_empty());
@@ -442,10 +465,10 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_parse_manifest() -> Result<(), Box<dyn Error>> {
+    #[tokio::test]
+    async fn test_parse_manifest() -> Result<(), Box<dyn Error>> {
         let manifest_path = Path::new("fixtures/good-bag/manifest-md5.txt");
-        let checksums = parse_manifest(manifest_path)?;
+        let checksums = parse_manifest(manifest_path).await?;
 
         // Convert to a set for easier comparison
         let checksum_set: HashSet<String> = checksums.into_iter().collect();
@@ -460,8 +483,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_generate_uuid_filename() {
+    #[tokio::test]
+    async fn test_generate_uuid_filename() {
         // Test with extension
         let path = Path::new("test.jpg");
         let result = generate_uuid_filename(path);
