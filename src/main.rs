@@ -18,10 +18,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Returns the date the file was created.
+    /// Returns the date associated with the file.
     ///
     /// If the file contains EXIF data, the date will be extracted from the EXIF data.
-    /// Otherwise, the file's creation time will be returned.
+    /// Otherwise, the file's modification time will be returned.
     Date {
         /// Path to the image file
         file: PathBuf,

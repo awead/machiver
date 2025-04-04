@@ -24,10 +24,10 @@ pub async fn get_date(path: &Path) -> Result<NaiveDateTime, Box<dyn Error>> {
         return Ok(date);
     }
 
-    // Fallback to file creation time
+    // Fallback to file modification time (more reliable across platforms than creation time)
     let metadata = metadata(path)?;
-    let created = metadata.created()?;
-    let datetime: DateTime<Local> = created.into();
+    let modified = metadata.modified()?;
+    let datetime: DateTime<Local> = modified.into();
     Ok(datetime.naive_local())
 }
 
@@ -47,10 +47,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_file_creation_date() {
+    async fn test_file_modified_date() {
         let path = Path::new("fixtures/exifnodate.heif");
         let result = get_date(path).await.unwrap();
-        // Since this depends on the file's creation time, we just verify
+        // Since this depends on the file's modification time, we just verify
         // that we get a valid date and don't error
         assert!(result.year() >= 2024);
     }
