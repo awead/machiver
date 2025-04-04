@@ -16,13 +16,13 @@ This will compile the binary and install it in your Cargo binary directory (usua
 
 ## Features
 
-Builds a directory of files based on their creation date and time. Exif data is preferred, but if none is available, the file's creation time is used instead.
+Builds a directory of files based on their associated date and time. EXIF data is preferred, but if none is available, the file's modification time is used instead.
 
 ## Usage
 
 ### Date
 
-Returns the date the file was created:
+Returns the date associated with the file:
 
 ```bash
 machiver date <path_to_image>
@@ -35,3 +35,31 @@ Copies files to a new location using the date extracted from the file's metadata
 ```bash
 machiver copy <source> <destination> --recursive --rename
 ```
+
+## Cross-Compilation for Synology NAS
+
+Add the target:
+
+```bash
+rustup target add aarch64-unknown-linux-gnu
+```
+
+Install the cross-compiler tools for MacOS using brew:
+```bash
+brew tap messense/macos-cross-toolchains
+brew install aarch64-unknown-linux-gnu
+```
+
+Create `.cargo/config.toml` with:
+```toml
+[target.aarch64-unknown-linux-gnu]
+linker = "aarch64-linux-gnu-gcc"
+rustflags = ["-C", "target-feature=+crt-static"]
+```
+
+Build for the target:
+```bash
+cargo build --release --target aarch64-unknown-linux-gnu
+```
+
+The compiled binary will be in `target/aarch64-unknown-linux-gnu/release/machiver`.
