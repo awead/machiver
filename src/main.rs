@@ -121,7 +121,7 @@ fn generate_uuid_filename(original: &Path) -> PathBuf {
 
 fn is_duplicate(source: &Path, manifest: Option<&Vec<String>>) -> Result<Option<PathBuf>, Box<dyn Error>> {
     let Some(manifest_paths) = manifest else { return Ok(None) };
-    
+
     let mut file = File::open(source)?;
     let mut context = md5::Context::new();
     std::io::copy(&mut file, &mut context)?;
@@ -137,11 +137,14 @@ fn is_duplicate(source: &Path, manifest: Option<&Vec<String>>) -> Result<Option<
 }
 
 fn copy_file(source: &Path, destination: &Path, rename: bool, manifest: Option<&Vec<String>>) -> Result<PathBuf, Box<dyn Error>> {
+    print!("Copying {}\t\t", source.file_name().unwrap_or_default().to_string_lossy());
+
     // Check for duplicates if manifest is provided
     if let Some(duplicate_path) = is_duplicate(source, manifest)? {
-        println!("Skipping duplicate file");
+        println!("(duplicate)");
         return Ok(duplicate_path);
     }
+
     let date = get_date(source)?;
 
     // Create the date-based directory structure
@@ -167,6 +170,7 @@ fn copy_file(source: &Path, destination: &Path, rename: bool, manifest: Option<&
 
     // Copy the file
     fs::copy(source, &target_path)?;
+    println!("OK!");
 
     Ok(target_path)
 }
@@ -208,11 +212,7 @@ fn main() {
                 manifest: manifest.as_ref().and_then(|m| parse_manifest(m).ok()),
             };
             match process_path(&config) {
-                Ok(copied_files) => {
-                    for path in copied_files {
-                        println!("Copied to {}", path.display());
-                    }
-                },
+                Ok(copied_files) => println!("Finished! Files processed: {}", copied_files.len()),
                 Err(e) => println!("Error: {}", e),
             }
         },
