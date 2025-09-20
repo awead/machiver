@@ -8,17 +8,20 @@ Machiver is a Rust CLI tool for archiving files, primarily designed to organize 
 
 ## Core Architecture
 
-The project is structured as a Rust binary crate with three main modules:
+The project is structured as a Rust binary crate with four main modules:
 
 - **main.rs**: CLI argument parsing using `clap` with subcommands for `date` and `copy`
 - **date.rs**: Date extraction logic that tries EXIF data first, then falls back to file modification time
-- **copy.rs**: File copying and organization logic with async processing, duplicate detection, and UUID renaming
+- **copy.rs**: File copying and organization logic with async processing and UUID renaming
+- **manifest.rs**: BagIt manifest parsing and duplicate detection with support for multiple hash algorithms
 
 Key architectural decisions:
 - Uses async/await with `tokio` for file operations
 - Supports both EXIF date extraction (`kamadak-exif`) and filesystem metadata
-- Implements duplicate detection via MD5 checksums against BagIt manifests
+- Implements duplicate detection via multiple hash algorithms (MD5, SHA-256, SHA-512) against BagIt manifests
+- Algorithm detection based on manifest filename (e.g., `manifest-sha256.txt`)
 - Creates ISO8601 date-based directory structure (YYYY/MM/DD)
+- Clean separation of concerns with dedicated manifest module
 
 ## Development Commands
 
@@ -74,10 +77,12 @@ The test suite uses:
 Tests cover:
 - EXIF date extraction
 - File modification date fallback
-- Duplicate detection with MD5 checksums
-- BagIt manifest parsing
+- Duplicate detection with multiple hash algorithms (MD5, SHA-256, SHA-512)
+- BagIt manifest parsing with algorithm detection
+- Hash algorithm detection from manifest filenames
 - Recursive directory processing
 - UUID filename generation
+- Unsupported algorithm warning behavior
 
 ## CI/CD
 
@@ -93,7 +98,8 @@ GitHub Actions workflow (`.github/workflows/ci.yml`) runs:
 - **chrono**: Date/time handling
 - **clap**: CLI argument parsing
 - **uuid**: UUID generation for file renaming
-- **md5**: Checksum calculation for duplicate detection
+- **md5**: MD5 checksum calculation for duplicate detection
+- **sha2**: SHA-256 and SHA-512 checksum calculation
 
 ## File Structure Patterns
 

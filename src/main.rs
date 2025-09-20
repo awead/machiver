@@ -4,9 +4,11 @@ use clap::{Parser, Subcommand};
 
 pub mod copy;
 pub mod date;
+pub mod manifest;
 
-use copy::{CopyConfig, process_path, parse_manifest};
+use copy::{CopyConfig, process_path};
 use date::get_date;
+use manifest::parse_manifest;
 
 #[derive(Parser)]
 #[command(name = "machiver")]
